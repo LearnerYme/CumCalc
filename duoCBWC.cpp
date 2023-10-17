@@ -1,4 +1,7 @@
 /*
+    Updated: Now read file lists (of input raw cumulants and centrality edges)
+    Support up to 10 files.
+
     CBWC for U/L runs.
     Will do weighted average including both U/L runs and merge them together with specified bin edge.
     Yige Huang on Aug. 18, 2023
@@ -21,29 +24,51 @@
 #include "NpartLoader.h"
 #include "CentDefinition.h"
 
+using std::vector;
+using std::string;
+
 int main(int argc, char** argv){
-    if (argc != 6) {
-        std::cout << "[ERROR] Should have 5 arguments!\n";
-        std::cout << " - Usage: ./duoCBWC FILE1 FILE2 CENT1 CENT2 OUTNAME\n";
+    if (argc != 4) {
+        std::cout << "[ERROR] Should have 3 arguments!\n";
+        std::cout << " - Usage: ./duoCBWC FILE_LIST CENT_LIST OUTNAME\n";
     } else {
         std::cout << "[LOG] Input inforamtion: \n";
-        std::cout << " - Terms file 1: " << argv[1] << std::endl;
-        std::cout << " - Terms file 2: " << argv[2] << std::endl;
-        std::cout << " - Cent. edge file 1: " << argv[3] << std::endl;
-        std::cout << " - Cent. edge file 2: " << argv[4] << std::endl;
-        std::cout << "[LOG] Output file name: " << argv[5] << ".root" << std::endl;
+        std::cout << " - Terms file list: " << argv[1] << std::endl;
+        std::cout << " - Cent. edge file list: " << argv[2] << std::endl;
+        std::cout << "[LOG] Output file name: " << argv[3] << ".root" << std::endl;
     }
+
+    vector<string> filelist;
+    vector<string> centlist;
+    TFile* tfs[10];
+    CentDefinition* cds[10];
+    string tmpStr;
+
+    int cnt = 0;
+    std::ifstream rfilelist;
+    rfilelist.open(argv[1]);
+    while(std::getline(rfilelist, tmpStr)) {
+        filelist.push_back(tmpStr);
+        tfs[cnt] = new TFile(tmpStr.c_str());
+        cnt ++;
+    }
+
+    cnt = 0;
+    std::ifstream rcentlist;
+    rcentlist.open(argv[2]);
+    while(std::getline(rcentlist, tmpStr)) {
+        centlist.push_back(tmpStr);
+        cds[cnt] = new CentDefinition();
+        cds[cnt]->read_edge(tmpStr.c_str());
+        cnt ++;
+    }
+
+
     // CBWC
     const int MaxMult = 2000;
     const int LowEventCut = 10; // to avoid error caused by low event number
     std::cout << "[LOG] Now applying CBWC.\n";
     const int nCent = 9;
-    TFile* tfin1 = new TFile(argv[1]);
-    TFile* tfin2 = new TFile(argv[2]);
-    CentDefinition* cDef1 = new CentDefinition();
-    CentDefinition* cDef2 = new CentDefinition();
-    cDef1->read_edge(argv[3]); // need to prepare a centrality edge text file in the calculating directory
-    cDef2->read_edge(argv[4]); 
     NpartLoader* nDef = new NpartLoader();
     int* nPart = nDef->GetArray();
 
@@ -52,8 +77,7 @@ int main(int argc, char** argv){
     const int nType = 3; // type for proton type
     const char* typeNames[nType] = {"Pro", "Pbar", "Netp"};
     TGraphErrors* tgs[3][nCums];
-    TH1D* sCums1[3][nCums];
-    TH1D* sCums2[3][nCums];
+    TH1D* sCums[3][nCums][10];
     const char* cumNames[nCums] = {
         "C1", "C2", "C3", "C4", "C5", "C6",
         "R21", "R32", "R42", "R51", "R62",
@@ -72,14 +96,12 @@ int main(int argc, char** argv){
             if (i == 2 && j >= 11){
                 continue; // skip kappa for net proton
             }
-            tfin1->GetObject(
-                Form("%s%s", typeNames[i], cumNames[j]), 
-                sCums1[i][j]
-            );
-            tfin2->GetObject(
-                Form("%s%s", typeNames[i], cumNames[j]), 
-                sCums2[i][j]
-            );
+            for (int k=0; k<cnt; k++) {
+                tfs[k]->GetObject(
+                    Form("%s%s", typeNames[i], cumNames[j]), 
+                    sCums[i][j][k]
+                );
+            }
             tgs[i][j] = new TGraphErrors(nCent);
             tgs[i][j]->SetName(
                 Form("%s_%s", typeNames[i], cumNames[j])
@@ -95,11 +117,11 @@ int main(int argc, char** argv){
     double eSum[nType][nCent]; // error 
 
     // get number of events
-    TH1D* hEntries1[nType];
-    TH1D* hEntries2[nType];
+    TH1D* hEntries[nType][10];
     for (int i=0; i<nType; i++){
-        tfin1->GetObject(Form("%shEntries", typeNames[i]), hEntries1[i]);
-        tfin2->GetObject(Form("%shEntries", typeNames[i]), hEntries2[i]);
+        for (int j=0; j<cnt; j++) {
+            tfs[j]->GetObject(Form("%shEntries", typeNames[i]), hEntries[i][j]);
+        }
     }
 
     for (int i=0; i<nType; i++){ // i for proton types
@@ -118,33 +140,21 @@ int main(int argc, char** argv){
             
             // loop 2, sum up in different centrality bins
             for (int k=LowMultCut; k<=MaxMult; k++){ // here k for refmult3
-                // from nocbwc 1
-                nEvents = hEntries1[i]->GetBinContent(k+1); // need plus 1 here, 0 is the first bin
-                int curCent = cDef1->get_cent(k); // get current centrality
-                if (curCent >= 0 && nEvents >= LowEventCut){
-                    if (
-                        (j < 6) || // C1 ~ C6
-                        (j >= 11 && j <= 16) // k1 ~ k6
-                    ){ // for ratios, the value is just a dividing results, no need to do cbwc
-                        vSum[i][curCent] += (sCums1[i][j]->GetBinContent(k+1) * nEvents);
+                // inner loop: files
+                for (int p=0; p<cnt; p++) {
+                    nEvents = hEntries[i][p]->GetBinContent(k+1); // need plus 1 here, 0 is the first bin
+                    int curCent = cds[p]->get_cent(k); // get current centrality
+                    if (curCent >= 0 && nEvents >= LowEventCut){
+                        if (
+                            (j < 6) || // C1 ~ C6
+                            (j >= 11 && j <= 16) // k1 ~ k6
+                        ){ // for ratios, the value is just a dividing results, no need to do cbwc
+                            vSum[i][curCent] += (sCums[i][j][p]->GetBinContent(k+1) * nEvents);
+                        }
+                        // but the errors should be calculated
+                        eSum[i][curCent] += pow((sCums[i][j][p]->GetBinError(k+1) * nEvents), 2);
+                        CentEvent[i][curCent] += nEvents;
                     }
-                    // but the errors should be calculated
-                    eSum[i][curCent] += pow((sCums1[i][j]->GetBinError(k+1) * nEvents), 2);
-                    CentEvent[i][curCent] += nEvents;
-                }
-                // from nocbwc 2
-                nEvents = hEntries2[i]->GetBinContent(k+1); 
-                curCent = cDef2->get_cent(k); // get current centrality
-                if (curCent >= 0 && nEvents >= LowEventCut){
-                    if (
-                        (j < 6) || // C1 ~ C6
-                        (j >= 11 && j <= 16) // k1 ~ k6
-                    ){ // for ratios, the value is just a dividing results, no need to do cbwc
-                        vSum[i][curCent] += (sCums2[i][j]->GetBinContent(k+1) * nEvents);
-                    }
-                    // but the errors should be calculated
-                    eSum[i][curCent] += pow((sCums2[i][j]->GetBinError(k+1) * nEvents), 2);
-                    CentEvent[i][curCent] += nEvents;
                 }
             }
 
@@ -190,8 +200,9 @@ int main(int argc, char** argv){
             tgs[i][j]->Write();
         }
     }
-    tfin1->Close();
-    tfin2->Close();
+    for (int i=0; i<cnt; i++) {
+        tfs[i]->Close();
+    }
     tfout->Close();
 
     std::cout << "[LOG] All done!.\n";

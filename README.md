@@ -1,6 +1,6 @@
 # Cumulant Calculation
 
-Version: 3.0
+Version: 3.1
 
 Author: Yige Huang
 
@@ -13,6 +13,10 @@ Author: Yige Huang
 3. Use `make duoCBWC` to get `duoCBWC`, which from U and L run raw root files get CBWC results.
 
 ## Change log
+
+17.10.2023 by yghuang (3.1):
+
+> duoCBWC now support up to 10 files, and will read file list / centrality bin list instead of 2 file names.
 
 18.08.2023 by yghuang (3.0):
 
